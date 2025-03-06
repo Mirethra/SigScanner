@@ -1,0 +1,4 @@
+﻿  main.cpp
+C:\Users\User\source\repos\SigScanner\SigScanner\main.cpp(12,39): warning C4838: conversion from 'int' to 'bool' requires a narrowing conversion
+C:\Users\User\source\repos\SigScanner\SigScanner\main.cpp(12,39): warning C4305: 'initializing': truncation from 'int' to 'bool'
+  SigScanner.vcxproj -> C:\Users\User\source\repos\SigScanner\x64\Debug\SigScanner.exe
