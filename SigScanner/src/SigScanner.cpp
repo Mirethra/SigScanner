@@ -24,9 +24,9 @@
 #include <dirent.h>
 #include <dlfcn.h>
 #endif
+
 #ifdef _MSC_VER
 #include <intrin.h> 
-
 
 inline uint32_t builtin_ctz(uint32_t x) {
     unsigned long index;
@@ -40,7 +40,6 @@ inline uint32_t builtin_ctz(uint32_t x) {
     return __builtin_ctz(x);
 }
 #endif
-
 
 namespace scan {
 
@@ -310,6 +309,7 @@ namespace scan {
         m_initialized = true;
         return true;
     }
+
     bool ProcessMemory::Initialize(const std::string& process_name) {
 #ifdef _WIN32
         HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -387,6 +387,7 @@ namespace scan {
         return Initialize(pid);
 #endif
     }
+
     std::vector<region_t> ProcessMemory::GetRegions() const {
         return m_regions;
     }
@@ -438,88 +439,58 @@ namespace scan {
         return m_handle;
     }
 
+    // Modified ModuleMemory implementation
     ModuleMemory::ModuleMemory() : m_base(0), m_size(0) {}
 
-    ModuleMemory::ModuleMemory(const std::string& module_name) : m_base(0), m_size(0) {
-        Initialize(module_name);
+    ModuleMemory::ModuleMemory(const ProcessMemory& process, const std::string& module_name) : m_base(0), m_size(0) {
+        Initialize(process, module_name);
     }
 
-    ModuleMemory::ModuleMemory(address_t base, std::size_t size, const std::string& name)
+    ModuleMemory::ModuleMemory(address_t base, std::size_t size, const std::string& name, const ProcessMemory& process)
         : m_base(base), m_size(size), m_name(name) {
-        Initialize(base, size, name);
+        Initialize(base, size, name, process);
     }
 
-    bool ModuleMemory::Initialize(const std::string& module_name) {
+    bool ModuleMemory::Initialize(const ProcessMemory& process, const std::string& module_name) {
 #ifdef _WIN32
-        HMODULE module = GetModuleHandleA(module_name.c_str());
-        if (!module) {
+        HMODULE modules[1024];
+        DWORD cbNeeded;
+
+        if (!EnumProcessModules(process.GetHandle(), modules, sizeof(modules), &cbNeeded)) {
             return false;
         }
 
-        MODULEINFO mi{};
-        if (!GetModuleInformation(GetCurrentProcess(), module, &mi, sizeof(mi))) {
-            return false;
-        }
-
-        m_base = reinterpret_cast<address_t>(mi.lpBaseOfDll);
-        m_size = mi.SizeOfImage;
-        m_name = module_name;
-
-        return Initialize(m_base, m_size, m_name);
-#else
-        void* handle = dlopen(module_name.c_str(), RTLD_LAZY);
-        if (!handle) {
-            return false;
-        }
-
-        Dl_info info{};
-        dladdr(handle, &info);
-
-        m_base = reinterpret_cast<address_t>(info.dli_fbase);
-        m_name = module_name;
-
-        std::string maps_path = "/proc/self/maps";
-        std::ifstream maps(maps_path);
-        if (!maps.is_open()) {
-            dlclose(handle);
-            return false;
-        }
-
-        std::string line;
-        while (std::getline(maps, line)) {
-            std::istringstream iss(line);
-
-            std::string range;
-            iss >> range;
-
-            std::size_t dash = range.find('-');
-            if (dash == std::string::npos) continue;
-
-            address_t start = std::stoull(range.substr(0, dash), nullptr, 16);
-            address_t end = std::stoull(range.substr(dash + 1), nullptr, 16);
-
-            if (start == m_base) {
-                m_size = end - start;
-                break;
+        for (DWORD i = 0; i < (cbNeeded / sizeof(HMODULE)); i++) {
+            char modName[MAX_PATH];
+            if (GetModuleBaseNameA(process.GetHandle(), modules[i], modName, sizeof(modName))) {
+                if (module_name == modName) {
+                    MODULEINFO mi{};
+                    if (GetModuleInformation(process.GetHandle(), modules[i], &mi, sizeof(mi))) {
+                        m_base = reinterpret_cast<address_t>(mi.lpBaseOfDll);
+                        m_size = mi.SizeOfImage;
+                        m_name = module_name;
+                        return Initialize(m_base, m_size, m_name, process);
+                    }
+                }
             }
         }
-
-        dlclose(handle);
-
-        return Initialize(m_base, m_size, m_name);
+        return false;
+#else
+        // Linux implementation would need similar changes
+        return false;
 #endif
     }
 
-    bool ModuleMemory::Initialize(address_t base, std::size_t size, const std::string& name) {
+    bool ModuleMemory::Initialize(address_t base, std::size_t size, const std::string& name, const ProcessMemory& process) {
         m_base = base;
         m_size = size;
         m_name = name;
         m_initialized = true;
 
-        return LoadFromMemory();
+        return LoadFromMemory(process);
     }
 
-    bool ModuleMemory::LoadFromMemory() {
+    bool ModuleMemory::LoadFromMemory(const ProcessMemory& process) {
         if (!m_initialized) {
             return false;
         }
@@ -527,18 +498,15 @@ namespace scan {
         m_data.resize(m_size);
 
 #ifdef _WIN32
-        std::memcpy(m_data.data(), reinterpret_cast<void*>(m_base), m_size);
-#else
-        std::ifstream mem("/proc/self/mem", std::ios::binary);
-        if (!mem.is_open()) {
+        SIZE_T bytesRead;
+        if (!ReadProcessMemory(process.GetHandle(), reinterpret_cast<void*>(m_base), m_data.data(), m_size, &bytesRead)) {
             return false;
         }
-
-        mem.seekg(m_base);
-        mem.read(reinterpret_cast<char*>(m_data.data()), m_size);
+        return bytesRead > 0;
+#else
+        // Linux implementation would need similar changes
+        return false;
 #endif
-
-        return true;
     }
 
     bool ModuleMemory::LoadFromFile(const std::string& path) {
@@ -648,8 +616,9 @@ namespace scan {
         return m_process.Initialize(process_name);
     }
 
+    // Modified AddModule method to use the process handle
     bool SigScanner::AddModule(const std::string& module_name) {
-        auto module = ModuleMemory(module_name);
+        auto module = ModuleMemory(m_process, module_name);
         if (!module.IsValid()) {
             return false;
         }
@@ -658,8 +627,9 @@ namespace scan {
         return true;
     }
 
+    // Modified AddModule method to use the process handle
     bool SigScanner::AddModule(address_t base, std::size_t size, const std::string& name) {
-        auto module = ModuleMemory(base, size, name);
+        auto module = ModuleMemory(base, size, name, m_process);
         if (!module.IsValid()) {
             return false;
         }
@@ -950,7 +920,7 @@ namespace scan {
                 uint32_t mask = _mm256_movemask_epi8(cmp);
 
                 while (mask != 0) {
-                    uint32_t trailing_zeros = builtin_ctz(mask); // use the new thing we made
+                    uint32_t trailing_zeros = builtin_ctz(mask);
 
                     if (i + trailing_zeros + pattern_size <= size && pattern.Match(data + i + trailing_zeros, pattern_size)) {
                         ScanResult result;

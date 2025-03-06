@@ -2,12 +2,16 @@
 #include <iostream>
 #include <iomanip>
 
+#include <Windows.h>
+#include <TlHelp32.h>
+
+
 int main() {
     using namespace scan;
 
-    std::string proc = "RobloxPlayerBeta.exe";
-    std::string mod = "RobloxPlayerBeta.dll";
-    std::string pat_str = "65 48 8B 04 25 ?? ?? ?? ?? 48 03 38 48 8D 1D";
+    std::string proc = "anything.exe"; // Not being used in this example yet.
+    std::string mod = "USER32.dll";
+    std::string pat_str = "48 89 5C 24 08 57 48 83 EC 20 48 8B 05"; // GetWindowRect
 
     ScanOptions opts{ ScanType::AVX2, 4 };
     SigScanner sc(proc, opts);
